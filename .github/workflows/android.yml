@@ -1,3 +1,85 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-22.04
+
+    defaults:
+      run:
+        working-directory: SkyRescue-New
+
+    env:
+      GODOT_VERSION: 4.4.1
+
+    steps:
+      - name: Download project
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install Android tools
+        run: |
+          set -euo pipefail
+          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Install Godot
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -fL --retry 3 "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -o /tmp/godot.zip
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          sudo install /tmp/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+          curl -fL --retry 3 "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" -o /tmp/templates.zip
+          unzip -q /tmp/templates.zip -d /tmp/godot-templates
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          cp -a /tmp/godot-templates/templates/. "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+
+      - name: Configure Android paths
+        run: |
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          EOF
+
+      - name: Restore Persian font
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y fonts-dejavu-core
+          mkdir -p fonts licenses
+          cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf fonts/DejaVuSans.ttf
+          cp /usr/share/doc/fonts-dejavu-core/copyright licenses/DejaVu-copyright.txt
+
+      - name: Import project
+        run: |
+          set -euo pipefail
+          godot --headless --editor --path . --import 2>&1 | tee first-import.log
+          godot --headless --editor --path . --import 2>&1 | tee import.log
+
+      - name: Check script errors
+        run: |
+          if grep -E 'SCRIPT ERROR|Parse Error|Failed to load script|Error loading custom project theme' import.log; then
+            exit 1
+          fi
+
       - name: Create test signing key
         run: |
           set -euo pipefail
