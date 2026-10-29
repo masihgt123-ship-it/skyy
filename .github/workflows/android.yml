@@ -37,24 +37,19 @@ jobs:
       - name: Install Android tools
         run: |
           set -euo pipefail
+
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Check project files
-        run: |
-          set -euo pipefail
-          test -f project.godot
-          test -f export_presets.cfg
-
-      - name: Install Godot and export templates
+      - name: Install Godot and templates
         run: |
           set -euo pipefail
 
           BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
 
-          curl --fail --location --retry 3 \
+          curl -fL --retry 3 \
             "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" \
             -o /tmp/godot.zip
 
@@ -64,19 +59,57 @@ jobs:
             "/tmp/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" \
             /usr/local/bin/godot
 
-          curl --fail --location --retry 3 \
+          curl -fL --retry 3 \
             "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" \
             -o /tmp/templates.zip
 
           unzip -q /tmp/templates.zip -d /tmp/godot-templates
 
-          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
 
-          mkdir -p "$TEMPLATE_DIR"
-          cp -a /tmp/godot-templates/templates/. "$TEMPLATE_DIR/"
+          mkdir -p "$DIR"
+          cp -a /tmp/godot-templates/templates/. "$DIR/"
 
-          test -s "$TEMPLATE_DIR/android_debug.apk"
-          godot --version
+          test -s "$DIR/android_debug.apk"
+
+      - name: Fix Android texture settings automatically
+        run: |
+          set -euo pipefail
+
+          test -f project.godot
+          test -f export_presets.cfg
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("project.godot")
+          text = p.read_text(encoding="utf-8")
+          section = re.search(r"^\[rendering\][ \t]*\r?\n", text, re.M)
+          key = "textures/vram_compression/import_etc2_astc"
+
+          if section:
+              start = section.end()
+              following = re.search(r"^\[", text[start:], re.M)
+              end = start + following.start() if following else len(text)
+              body = text[start:end]
+              setting = re.compile(
+                  r"^" + re.escape(key) + r"[ \t]*=.*$",
+                  re.M,
+              )
+
+              if setting.search(body):
+                  body = setting.sub(key + "=true", body)
+              else:
+                  body = "\n" + key + "=true\n" + body
+
+              text = text[:start] + body + text[end:]
+          else:
+              text += "\n[rendering]\n\n" + key + "=true\n"
+
+          p.write_text(text, encoding="utf-8")
+          print("Android ETC2/ASTC import enabled.")
+          PY
 
       - name: Prepare Persian font
         run: |
@@ -117,7 +150,7 @@ jobs:
           echo "GODOT_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
           echo "GODOT_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
 
-      - name: Configure Godot Android settings
+      - name: Configure Godot
         run: |
           set -euo pipefail
 
@@ -134,9 +167,6 @@ jobs:
           export/android/debug_keystore_pass = "android"
           EOF
 
-          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          test -x "$JAVA_HOME/bin/java"
-
       - name: Import project
         run: |
           set -euo pipefail
@@ -150,7 +180,7 @@ jobs:
           if grep -E \
             'SCRIPT ERROR|Parse Error|Failed to load script|Error loading custom project theme' \
             import.log; then
-            echo "::error::Project import failed. Check import.log."
+            echo "::error::Project import failed. See import.log."
             exit 1
           fi
 
@@ -169,7 +199,7 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
             verify --verbose build/SkyRescue-test.apk
 
-      - name: Upload test APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SkyRescue-test-APK
