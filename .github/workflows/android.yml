@@ -9,13 +9,15 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     defaults:
       run:
+        shell: bash
         working-directory: SkyRescue-New
 
     env:
-      GODOT_VERSION: 4.4.1
+      GODOT_VERSION: "4.4.1"
 
     steps:
       - name: Download project
@@ -25,89 +27,162 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Set up Android
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platform-tools'
+          packages: "platform-tools"
 
       - name: Install Android tools
         run: |
           set -euo pipefail
-          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      - name: Install Godot
+      - name: Check project files
         run: |
           set -euo pipefail
+          test -f project.godot
+          test -f export_presets.cfg
+
+      - name: Install Godot and export templates
+        run: |
+          set -euo pipefail
+
           BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
-          curl -fL --retry 3 "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -o /tmp/godot.zip
+
+          curl --fail --location --retry 3 \
+            "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" \
+            -o /tmp/godot.zip
+
           unzip -q /tmp/godot.zip -d /tmp/godot
-          sudo install /tmp/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
-          curl -fL --retry 3 "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" -o /tmp/templates.zip
+
+          sudo install \
+            "/tmp/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" \
+            /usr/local/bin/godot
+
+          curl --fail --location --retry 3 \
+            "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" \
+            -o /tmp/templates.zip
+
           unzip -q /tmp/templates.zip -d /tmp/godot-templates
-          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
-          cp -a /tmp/godot-templates/templates/. "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
 
-      - name: Configure Android paths
-        run: |
-          mkdir -p "$HOME/.config/godot"
-          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
-          [gd_resource type="EditorSettings" format=3]
-          [resource]
-          export/android/android_sdk_path = "$ANDROID_HOME"
-          export/android/java_sdk_path = "$JAVA_HOME"
-          EOF
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
 
-      - name: Restore Persian font
+          mkdir -p "$TEMPLATE_DIR"
+          cp -a /tmp/godot-templates/templates/. "$TEMPLATE_DIR/"
+
+          test -s "$TEMPLATE_DIR/android_debug.apk"
+          godot --version
+
+      - name: Prepare Persian font
         run: |
           set -euo pipefail
+
           sudo apt-get update
           sudo apt-get install -y fonts-dejavu-core
+
           mkdir -p fonts licenses
-          cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf fonts/DejaVuSans.ttf
-          cp /usr/share/doc/fonts-dejavu-core/copyright licenses/DejaVu-copyright.txt
 
-      - name: Import project
-        run: |
-          set -euo pipefail
-          godot --headless --editor --path . --import 2>&1 | tee first-import.log
-          godot --headless --editor --path . --import 2>&1 | tee import.log
-
-      - name: Check script errors
-        run: |
-          if grep -E 'SCRIPT ERROR|Parse Error|Failed to load script|Error loading custom project theme' import.log; then
-            exit 1
+          if [ ! -s fonts/DejaVuSans.ttf ]; then
+            cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+              fonts/DejaVuSans.ttf
           fi
+
+          cp /usr/share/doc/fonts-dejavu-core/copyright \
+            licenses/DejaVu-copyright.txt
 
       - name: Create test signing key
         run: |
           set -euo pipefail
+
           mkdir -p "$HOME/.android"
+
           keytool -genkeypair \
+            -noprompt \
             -keystore "$HOME/.android/debug.keystore" \
+            -storetype JKS \
             -storepass android \
-            -alias androiddebugkey \
             -keypass android \
-            -dname "CN=Android Debug,O=Android,C=US" \
+            -alias androiddebugkey \
             -keyalg RSA \
             -keysize 2048 \
-            -validity 10000
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
           echo "GODOT_KEYSTORE_DEBUG_PATH=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
           echo "GODOT_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
           echo "GODOT_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
 
+      - name: Configure Godot Android settings
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.config/godot"
+
+          cat > "$HOME/.config/godot/editor_settings-4.4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "$HOME/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -x "$JAVA_HOME/bin/java"
+
+      - name: Import project
+        run: |
+          set -euo pipefail
+
+          godot --headless --editor --path . --import \
+            2>&1 | tee first-import.log
+
+          godot --headless --editor --path . --import \
+            2>&1 | tee import.log
+
+          if grep -E \
+            'SCRIPT ERROR|Parse Error|Failed to load script|Error loading custom project theme' \
+            import.log; then
+            echo "::error::Project import failed. Check import.log."
+            exit 1
+          fi
+
       - name: Build test APK
         run: |
           set -euo pipefail
-          mkdir -p build
-          godot --headless --path . --export-debug Android build/SkyRescue-test.apk
-          test -s build/SkyRescue-test.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify build/SkyRescue-test.apk
 
-      - name: Upload APK
+          mkdir -p build
+
+          godot --headless --verbose --path . \
+            --export-debug "Android" build/SkyRescue-test.apk \
+            2>&1 | tee build.log
+
+          test -s build/SkyRescue-test.apk
+
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
+            verify --verbose build/SkyRescue-test.apk
+
+      - name: Upload test APK
         uses: actions/upload-artifact@v4
         with:
-          name: SkyRescue-Test-APK
+          name: SkyRescue-test-APK
           path: SkyRescue-New/build/SkyRescue-test.apk
           if-no-files-found: error
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyRescue-build-logs
+          path: |
+            SkyRescue-New/first-import.log
+            SkyRescue-New/import.log
+            SkyRescue-New/build.log
+          if-no-files-found: ignore
