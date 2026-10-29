@@ -1,0 +1,10 @@
+Audio integration
+- helicopter.mp3: looping engine, slight pitch change with speed.
+- lmg_fire01.mp3: player gun shots.
+- explosion.wav: enemy destruction.
+- alarm.ogg: loops while health is 30 or lower; stops after reset/recovery.
+- awesomeness.wav: reserved for future title menu; NOT played during combat.
+
+User supplied all recordings. Source URLs and license documents were not supplied. Verify redistribution/commercial permissions and required attribution before publishing. Original explosion filename: NenadSimic - Muffled Distant Explosion.wav (filename alone does not verify authorship/license).
+
+Godot runtime and listening/mix tests have not been performed for this version.
