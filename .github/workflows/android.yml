@@ -67,6 +67,7 @@ jobs:
       - name: Configure project and icon
         run: |
           set -euo pipefail
+          cp ../SkyRescue-App-Icon.png ./SkyRescue-App-Icon.png
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -93,7 +94,7 @@ jobs:
 
           icon_file = Path("SkyRescue-App-Icon.png")
           if not icon_file.is_file():
-              raise SystemExit("Missing SkyRescue-New/SkyRescue-App-Icon.png")
+              raise SystemExit("Missing SkyRescue-App-Icon.png")
 
           icon = '"res://SkyRescue-App-Icon.png"'
           p = Path("project.godot")
