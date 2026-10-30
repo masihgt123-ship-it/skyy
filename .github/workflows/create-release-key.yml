@@ -1,0 +1,61 @@
+name: Create release key ONCE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  create-key:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Generate and encrypt signing key
+        shell: bash
+        env:
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          if [ "${#RELEASE_KEY_PASSWORD}" -lt 20 ]; then
+            echo "::error::Set RELEASE_KEY_PASSWORD to at least 20 characters."
+            exit 1
+          fi
+
+          KEY="$RUNNER_TEMP/skyrescue-release.jks"
+          trap 'rm -f "$KEY"' EXIT
+
+          keytool -genkeypair -noprompt \
+            -keystore "$KEY" \
+            -storetype JKS \
+            -storepass:env RELEASE_KEY_PASSWORD \
+            -keypass:env RELEASE_KEY_PASSWORD \
+            -alias skyrescue \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 10000 \
+            -dname "CN=SkyRescue,O=SkyRescue,C=IR"
+
+          mkdir -p "$RUNNER_TEMP/encrypted-key"
+
+          openssl enc -aes-256-cbc \
+            -salt -pbkdf2 -iter 600000 \
+            -in "$KEY" \
+            -out "$RUNNER_TEMP/encrypted-key/skyrescue-release.jks.enc" \
+            -pass env:RELEASE_KEY_PASSWORD
+
+      - name: Download encrypted key
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyRescue-encrypted-release-key
+          path: ${{ runner.temp }}/encrypted-key/skyrescue-release.jks.enc
+          if-no-files-found: error
+          retention-days: 7
