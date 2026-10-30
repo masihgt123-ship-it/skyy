@@ -1,4 +1,4 @@
-name: Android APK
+name: Android Release APK
 
 on:
   workflow_dispatch:
@@ -51,9 +51,9 @@ jobs:
           DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
           mkdir -p "$DIR"
           cp -a /tmp/godot-templates/templates/. "$DIR/"
-          test -s "$DIR/android_debug.apk"
+          test -s "$DIR/android_release.apk"
 
-      - name: Prepare font
+      - name: Prepare font and icon
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -63,13 +63,39 @@ jobs:
             cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf fonts/DejaVuSans.ttf
           fi
           cp /usr/share/doc/fonts-dejavu-core/copyright licenses/DejaVu-copyright.txt
+          cp ../SkyRescue-App-Icon.png ./SkyRescue-App-Icon.png
 
-      - name: Configure project and icon
+      - name: Decrypt release key
+        env:
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          cp ../SkyRescue-App-Icon.png ./SkyRescue-App-Icon.png
+          umask 077
+          if [ -z "$RELEASE_KEY_PASSWORD" ]; then
+            echo "::error::Missing RELEASE_KEY_PASSWORD secret"
+            exit 1
+          fi
+          openssl enc -d -aes-256-cbc \
+            -pbkdf2 -iter 600000 \
+            -in ../skyrescue-release.jks.enc \
+            -out "$RUNNER_TEMP/skyrescue-release.jks" \
+            -pass env:RELEASE_KEY_PASSWORD
+
+          keytool -list \
+            -keystore "$RUNNER_TEMP/skyrescue-release.jks" \
+            -storepass:env RELEASE_KEY_PASSWORD \
+            -alias skyrescue > /dev/null
+
+          echo "GODOT_KEYSTORE_RELEASE_PATH=$RUNNER_TEMP/skyrescue-release.jks" >> "$GITHUB_ENV"
+          echo "GODOT_KEYSTORE_RELEASE_USER=skyrescue" >> "$GITHUB_ENV"
+
+      - name: Configure project
+        run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import os
+          import json
           import re
 
           def setting(text, section, key, value):
@@ -92,49 +118,32 @@ jobs:
                   body = "\n" + line + "\n" + body
               return text[:start] + body + text[end:]
 
-          icon_file = Path("SkyRescue-App-Icon.png")
-          if not icon_file.is_file():
-              raise SystemExit("Missing SkyRescue-App-Icon.png")
-
-          icon = '"res://SkyRescue-App-Icon.png"'
+          icon = json.dumps("res://SkyRescue-App-Icon.png")
           p = Path("project.godot")
           text = p.read_text(encoding="utf-8")
           text = setting(text, "application", "config/icon", icon)
           text = setting(
-              text,
-              "rendering",
-              "textures/vram_compression/import_etc2_astc",
-              "true"
+              text, "rendering",
+              "textures/vram_compression/import_etc2_astc", "true"
           )
           p.write_text(text, encoding="utf-8")
 
           p = Path("export_presets.cfg")
           text = p.read_text(encoding="utf-8")
-          for key in (
-              "launcher_icons/main_192x192",
-              "launcher_icons/adaptive_foreground_432x432",
-          ):
-              text = setting(text, "preset.0.options", key, icon)
+          section = "preset.0.options"
+          values = {
+              "launcher_icons/main_192x192": icon,
+              "launcher_icons/adaptive_foreground_432x432": icon,
+              "package/signed": "true",
+              "keystore/release": json.dumps(
+                  os.environ["GODOT_KEYSTORE_RELEASE_PATH"]
+              ),
+              "keystore/release_user": json.dumps("skyrescue"),
+          }
+          for key, value in values.items():
+              text = setting(text, section, key, value)
           p.write_text(text, encoding="utf-8")
           PY
-
-      - name: Create test signing key
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.android"
-          keytool -genkeypair -noprompt \
-            -keystore "$HOME/.android/debug.keystore" \
-            -storetype JKS \
-            -storepass android \
-            -keypass android \
-            -alias androiddebugkey \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-          echo "GODOT_KEYSTORE_DEBUG_PATH=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
-          echo "GODOT_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
-          echo "GODOT_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
 
       - name: Configure Godot
         run: |
@@ -146,9 +155,6 @@ jobs:
             '[resource]' \
             "export/android/android_sdk_path = \"$ANDROID_HOME\"" \
             "export/android/java_sdk_path = \"$JAVA_HOME\"" \
-            "export/android/debug_keystore = \"$HOME/.android/debug.keystore\"" \
-            'export/android/debug_keystore_user = "androiddebugkey"' \
-            'export/android/debug_keystore_pass = "android"' \
             > "$HOME/.config/godot/editor_settings-4.4.tres"
 
       - name: Import project
@@ -161,26 +167,36 @@ jobs:
             exit 1
           fi
 
-      - name: Build test APK
+      - name: Build release APK
+        env:
+          GODOT_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir -p build
-          godot --headless --verbose --path . --export-debug "Android" build/SkyRescue-test.apk 2>&1 | tee build.log
-          test -s build/SkyRescue-test.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose build/SkyRescue-test.apk
+          godot --headless --path . \
+            --export-release "Android" \
+            build/SkyRescue-release.apk 2>&1 | tee build.log
+          test -s build/SkyRescue-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
+            verify --verbose build/SkyRescue-release.apk
 
-      - name: Upload APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: SkyRescue-test-APK
-          path: SkyRescue-New/build/SkyRescue-test.apk
+          name: SkyRescue-RELEASE-APK
+          path: SkyRescue-New/build/SkyRescue-release.apk
           if-no-files-found: error
 
-      - name: Upload logs
+      - name: Delete decrypted key
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/skyrescue-release.jks"
+
+      - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SkyRescue-build-logs
+          name: SkyRescue-release-logs
           path: |
             SkyRescue-New/first-import.log
             SkyRescue-New/import.log
